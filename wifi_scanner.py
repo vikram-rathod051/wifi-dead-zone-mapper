@@ -1,67 +1,74 @@
 import subprocess
+import platform
 import re
 
 
 def scan_wifi():
     try:
+        system = platform.system()
+
+        if system == "Windows":
+            command = [
+                "netsh", "wlan", "show",
+                "networks", "mode=bssid"
+            ]
+
+        elif system == "Linux":
+            command = ["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY", "dev", "wifi", "list"]
+
+        else:
+            return [], "Unsupported operating system."
+
         result = subprocess.run(
-            ["netsh", "wlan", "show", "networks", "mode=bssid"],
+            command,
             capture_output=True,
             text=True,
-            encoding="utf-8",
-            errors="replace",
             timeout=20
         )
 
         if result.returncode != 0:
-            return [], "Unable to scan Wi-Fi networks."
+            return [], result.stderr or "Wi-Fi scan failed."
 
         networks = []
-        current_ssid = None
-        current_signal = None
-        current_security = None
 
-        for line in result.stdout.splitlines():
-            line = line.strip()
+        if system == "Windows":
+            current_ssid = None
 
-            if line.startswith("SSID ") and ":" in line:
-                if current_ssid and current_signal is not None:
+            for line in result.stdout.splitlines():
+                line = line.strip()
+
+                if line.startswith("SSID ") and ":" in line:
+                    current_ssid = line.split(":", 1)[1].strip()
+
+                elif line.startswith("Signal") and ":" in line:
+                    match = re.search(r"(\d+)%", line)
+
+                    if match and current_ssid:
+                        networks.append({
+                            "SSID": current_ssid,
+                            "Signal (%)": int(match.group(1)),
+                            "Security": "Unknown"
+                        })
+                        current_ssid = None
+
+        else:
+            for line in result.stdout.splitlines():
+                parts = line.split(":")
+
+                if len(parts) >= 3 and parts[0]:
                     networks.append({
-                        "SSID": current_ssid,
-                        "Signal (%)": current_signal,
-                        "Security": current_security or "Unknown"
+                        "SSID": parts[0],
+                        "Signal (%)": int(parts[1]),
+                        "Security": parts[2] or "Unknown"
                     })
 
-                current_ssid = line.split(":", 1)[1].strip()
-                current_signal = None
-                current_security = None
-
-            elif line.startswith("Signal") and ":" in line:
-                match = re.search(r"(\d+)%", line)
-
-                if match:
-                    current_signal = int(match.group(1))
-
-            elif line.startswith("Authentication") and ":" in line:
-                current_security = line.split(":", 1)[1].strip()
-
-        if current_ssid and current_signal is not None:
-            networks.append({
-                "SSID": current_ssid,
-                "Signal (%)": current_signal,
-                "Security": current_security or "Unknown"
-            })
-
         if not networks:
-            return [], "No networks found. Check that Wi-Fi is enabled."
+            return [], "No Wi-Fi networks found."
 
         return networks, None
 
     except FileNotFoundError:
-        return [], "Windows netsh was not found."
-
-    except subprocess.TimeoutExpired:
-        return [], "Wi-Fi scanning timed out."
+        return [], "Wi-Fi scanning utility is unavailable on this server."
 
     except Exception as error:
         return [], str(error)
